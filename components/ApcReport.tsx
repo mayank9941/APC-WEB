@@ -12,6 +12,7 @@ import {
   monthLabel,
 } from "@/lib/apc";
 import CollectionChart from "./CollectionChart";
+import { exportApcXlsx } from "@/lib/exportXlsx";
 
 interface ApiResponse {
   plaza: { code: number; name: string };
@@ -99,6 +100,24 @@ export default function ApcReport({ code }: { code: string }) {
         {monthLabel(months[11])} ({table2.monthsUsed} month
         {table2.monthsUsed === 1 ? "" : "s"} with data)
       </p>
+
+      <div className="apc-hero top">
+        <div className="hero-main">
+          <span className="label">APC-2</span>
+          <span className="value">₹ {table3.apcCr.toFixed(2)} Cr.</span>
+          <span className="per-day">
+            [Rs {fmtIN(table3.apcPerDay)} per day]
+          </span>
+        </div>
+        <button
+          className="btn export"
+          onClick={() =>
+            exportApcXlsx(data.plaza, result, uptoMonth, mfEntries, growth)
+          }
+        >
+          ⬇ Export to Excel
+        </button>
+      </div>
 
       <div className="controls">
         <div className="control-group">
@@ -327,12 +346,6 @@ export default function ApcReport({ code }: { code: string }) {
       {/* ---------------- Table 3 ---------------- */}
       <section className="card">
         <h2>Table 3 — Calculation of APC-2</h2>
-        <div className="apc-hero">
-          <span className="value">₹ {table3.apcCr.toFixed(2)} Cr.</span>
-          <span className="per-day">
-            [Rs {fmtIN(table3.apcPerDay)} per day]
-          </span>
-        </div>
         <div className="table-wrap">
           <table className="apc">
             <tbody>

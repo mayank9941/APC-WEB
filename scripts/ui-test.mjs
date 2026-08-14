@@ -1,5 +1,9 @@
 // Interactive UI test of the search screen + report page.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import puppeteer from "puppeteer-core";
+import ExcelJS from "exceljs";
 
 const browser = await puppeteer.launch({
   executablePath:
@@ -133,6 +137,47 @@ check(
   `month selector changes window (${subtitle.trim().slice(0, 80)})`,
   subtitle.includes("Dec-2025") && subtitle.includes("Jan-2025")
 );
+
+// 8. APC hero is at the top, above the controls and tables
+const heroOnTop = await page.evaluate(() => {
+  const hero = document.querySelector(".apc-hero.top");
+  const controls = document.querySelector(".controls");
+  return (
+    !!hero &&
+    !!controls &&
+    (hero.compareDocumentPosition(controls) &
+      Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+  );
+});
+check("APC value shown at top of report (above controls)", heroOnTop);
+
+// 9. Export button downloads a valid .xlsx containing the APC value
+const dlDir = fs.mkdtempSync(path.join(os.tmpdir(), "apc-dl-"));
+const cdp = await page.createCDPSession();
+await cdp.send("Page.setDownloadBehavior", {
+  behavior: "allow",
+  downloadPath: dlDir,
+});
+const apcShown = await page.$eval(".apc-hero .value", (e) => e.textContent);
+await page.click(".btn.export");
+let xlsxFile = null;
+for (let i = 0; i < 100 && !xlsxFile; i++) {
+  await new Promise((r) => setTimeout(r, 200));
+  xlsxFile = fs.readdirSync(dlDir).find((f) => f.endsWith(".xlsx"));
+}
+check(`Export downloads an .xlsx (${xlsxFile})`, !!xlsxFile);
+if (xlsxFile) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(path.join(dlDir, xlsxFile));
+  const ws = wb.getWorksheet("APC");
+  const apcInSheet = ws ? String(ws.getRow(6).getCell(2).value) : null;
+  const apcNum = (apcShown.match(/\d+(\.\d+)?/) || [""])[0];
+  check(
+    `exported sheet shows the on-screen APC (${apcInSheet} vs ${apcShown})`,
+    !!apcInSheet && apcInSheet.includes(apcNum)
+  );
+  fs.rmSync(dlDir, { recursive: true, force: true });
+}
 
 await page.screenshot({ path: "../search-report-final.png", fullPage: false });
 await browser.close();
