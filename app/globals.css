@@ -1,49 +1,347 @@
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-html {
-  height: 100%;
-}
-
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
-body {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --series-1: #2a78d6;
+  --accent: #2a78d6;
+  --danger: #d03b3b;
+  --good: #006300;
+  --hover-wash: rgba(11, 11, 11, 0.04);
 }
 
 * {
   box-sizing: border-box;
-  padding: 0;
+}
+
+html,
+body {
   margin: 0;
+  padding: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
 }
 
 a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+}
+
+/* ---------- Search screen ---------- */
+
+.search-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 18vh;
+}
+
+.search-screen h1 {
+  font-size: 28px;
+  font-weight: 650;
+  margin: 0 0 6px;
+}
+
+.search-screen .subtitle {
+  color: var(--ink-2);
+  margin: 0 0 28px;
+}
+
+.search-box {
+  position: relative;
+  width: min(560px, 90vw);
+}
+
+.search-box input {
+  width: 100%;
+  padding: 13px 16px;
+  font-size: 16px;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--baseline);
+  border-radius: 10px;
+  outline: none;
+}
+
+.search-box input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+}
+
+.search-dropdown .option {
+  padding: 9px 16px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.search-dropdown .option .code {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.search-dropdown .option:hover,
+.search-dropdown .option.active {
+  background: var(--hover-wash);
+}
+
+.search-dropdown .option.no-data .name {
+  color: var(--muted);
+}
+
+.search-dropdown .empty {
+  padding: 12px 16px;
+  color: var(--muted);
+}
+
+/* ---------- Report page ---------- */
+
+.report-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  margin-bottom: 4px;
+}
+
+.report-header h1 {
+  font-size: 24px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.report-header .plaza-code {
+  color: var(--ink-2);
+}
+
+.report-subtitle {
+  color: var(--ink-2);
+  margin: 0 0 20px;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 14px;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.control-group > label,
+.control-group .group-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.control-group select,
+.control-group input {
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--baseline);
+  border-radius: 8px;
+}
+
+.control-group .hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mf-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mf-row input[type="number"] {
+  width: 110px;
+}
+
+.btn {
+  padding: 7px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  border-radius: 8px;
+  border: 1px solid var(--baseline);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--hover-wash);
+}
+
+.btn.remove {
+  color: var(--danger);
+  border-color: var(--border);
+  padding: 7px 10px;
+}
+
+/* ---------- Cards, tables ---------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 18px 20px;
+  margin-bottom: 24px;
+}
+
+.card h2 {
+  font-size: 16.5px;
+  font-weight: 650;
+  margin: 0 0 2px;
+}
+
+.card .card-note {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table.apc {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+}
+
+table.apc th {
+  text-align: left;
+  color: var(--ink-2);
+  font-weight: 600;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--baseline);
+  vertical-align: bottom;
+}
+
+table.apc th.num,
+table.apc td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.apc td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--grid);
+  vertical-align: top;
+}
+
+table.apc tr.total td,
+table.apc tr.average td {
+  font-weight: 650;
+  border-top: 1px solid var(--baseline);
+  border-bottom: none;
+}
+
+table.apc tr.excluded td {
+  color: var(--muted);
+}
+
+table.apc .formula {
+  display: block;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.warn {
+  color: var(--danger);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* ---------- APC result ---------- */
+
+.apc-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 18px;
+  margin: 6px 0 14px;
+}
+
+.apc-hero .value {
+  font-size: 48px;
+  font-weight: 650;
+  line-height: 1.05;
+}
+
+.apc-hero .per-day {
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.chart-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.loading,
+.error-box {
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--ink-2);
+}
+
+.error-box {
+  color: var(--danger);
 }

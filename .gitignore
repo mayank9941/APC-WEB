@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# ui-test screenshot artifact
+search-report-final.png
+
 # debug
 npm-debug.log*
 yarn-debug.log*

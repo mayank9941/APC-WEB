@@ -1,66 +1,130 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+"use client";
 
-export default function Home() {
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+
+interface PlazaItem {
+  code: number;
+  name: string;
+  has_data: boolean;
+}
+
+export default function SearchPage() {
+  const router = useRouter();
+  const [plazas, setPlazas] = useState<PlazaItem[]>([]);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetch("/api/plazas")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(setPlazas)
+      .catch((e) => setError(`Could not load plaza list: ${e.message}`));
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return plazas;
+    return plazas.filter(
+      (p) => p.name.toLowerCase().includes(q) || String(p.code).includes(q)
+    );
+  }, [plazas, query]);
+
+  useEffect(() => {
+    const el = listRef.current?.children[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  const select = (p: PlazaItem) => {
+    setOpen(false);
+    router.push(`/plaza/${p.code}`);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!open || filtered.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((a) => Math.min(a + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((a) => Math.max(a - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      select(filtered[active]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main className="search-screen">
+      <h1>APC Calculator</h1>
+      <p className="subtitle">
+        Annual Potential Compensation for point-based toll plazas
+      </p>
+      <div className="search-box" ref={boxRef}>
+        <input
+          type="text"
+          placeholder="Search plaza by name or code…"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            setActive(0);
+          }}
+          onFocus={() => {
+            setOpen(true);
+            setActive(0);
+          }}
+          onKeyDown={onKeyDown}
+          aria-label="Search plaza by name or code"
+          autoComplete="off"
         />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.tsx file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+        {open && (
+          <div className="search-dropdown" ref={listRef}>
+            {error && <div className="empty">{error}</div>}
+            {!error && filtered.length === 0 && (
+              <div className="empty">
+                {plazas.length === 0 ? "Loading plazas…" : "No plaza matches your search."}
+              </div>
+            )}
+            {!error &&
+              filtered.map((p, i) => (
+                <div
+                  key={p.code}
+                  className={`option${i === active ? " active" : ""}${p.has_data ? "" : " no-data"}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    select(p);
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                >
+                  <span className="name">
+                    {p.name} ({p.code})
+                  </span>
+                  {!p.has_data && <span className="code">no data</span>}
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
