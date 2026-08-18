@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "APC Calculator",
+  title: "APC 2.0 — Annual Potential Collection | Point Based Plazas",
   description:
-    "Annual Potential Compensation calculator for NHAI point-based toll plazas",
+    "Annual Potential Collection calculator for NHAI point-based toll plazas",
 };
 
 export default function RootLayout({

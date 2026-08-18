@@ -52,14 +52,16 @@ a {
 }
 
 .search-screen h1 {
-  font-size: 28px;
+  font-size: 34px;
   font-weight: 650;
   margin: 0 0 6px;
+  text-align: center;
 }
 
 .search-screen .subtitle {
   color: var(--ink-2);
   margin: 0 0 28px;
+  text-align: center;
 }
 
 .search-box {

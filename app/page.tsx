@@ -75,9 +75,9 @@ export default function SearchPage() {
 
   return (
     <main className="search-screen">
-      <h1>APC Calculator</h1>
+      <h1>APC 2.0</h1>
       <p className="subtitle">
-        Annual Potential Compensation for point-based toll plazas
+        Annual Potential Collection | Point Based Plazas
       </p>
       <div className="search-box" ref={boxRef}>
         <input
