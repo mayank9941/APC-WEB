@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  DEFAULT_TRAFFIC_GROWTH_PCT,
   MfEntry,
   MonthlyRow,
   computeApc,
@@ -25,7 +26,7 @@ export default function ApcReport({ code }: { code: string }) {
   const [error, setError] = useState<string | null>(null);
   const [uptoMonth, setUptoMonth] = useState<string>("");
   const [mfEntries, setMfEntries] = useState<MfEntry[]>([]);
-  const [growth, setGrowth] = useState<number>(0);
+  const [growth, setGrowth] = useState<number>(DEFAULT_TRAFFIC_GROWTH_PCT);
 
   useEffect(() => {
     fetch(`/api/plazas/${code}`)
@@ -80,6 +81,7 @@ export default function ApcReport({ code }: { code: string }) {
   }
 
   const { table1, table2, table3, months } = result;
+  const showGrowthAlert = table2.negativeTrend && growth > 0;
 
   const setMf = (i: number, patch: Partial<MfEntry>) => {
     setMfEntries((list) =>
@@ -143,10 +145,13 @@ export default function ApcReport({ code }: { code: string }) {
             value={growth}
             onChange={(e) => setGrowth(Number(e.target.value))}
           >
-            <option value={0}>0%</option>
             <option value={5}>5%</option>
+            <option value={0}>0%</option>
           </select>
-          <span className="hint">Default 0%</span>
+          <span className="hint">
+            Default {DEFAULT_TRAFFIC_GROWTH_PCT}%; take 0% when the collection
+            trend is negative
+          </span>
         </div>
 
         <div className="control-group">
@@ -191,6 +196,18 @@ export default function ApcReport({ code }: { code: string }) {
           </span>
         </div>
       </div>
+
+      {showGrowthAlert && (
+        <div className="alert" role="alert">
+          <strong>Traffic growth should be taken as 0%.</strong> The average
+          daily ETC collection shows a negative trend over{" "}
+          {monthLabel(months[0])} – {monthLabel(months[11])} (about ₹
+          {fmtIN(Math.abs(table2.trendSlope), 0)} per day less each month).
+          <button className="btn alert-action" onClick={() => setGrowth(0)}>
+            Set growth to 0%
+          </button>
+        </div>
+      )}
 
       {/* ---------------- Table 1 ---------------- */}
       <section className="card">
@@ -240,8 +257,8 @@ export default function ApcReport({ code }: { code: string }) {
                   <span className="formula">F = E/ΣE</span>
                 </th>
                 <th className="num">
-                  Revenue Contribution (Roundoff)
-                  <span className="formula">G</span>
+                  Revenue Contribution (Roundoff) %
+                  <span className="formula">G = round(F), ΣG = 100%</span>
                 </th>
               </tr>
             </thead>
@@ -258,7 +275,7 @@ export default function ApcReport({ code }: { code: string }) {
                   <td className="num">{fmtIN(r.etcCollectionWithAp)}</td>
                   <td className="num">{fmtIN(r.derivedTotal)}</td>
                   <td className="num">{(r.contribution * 100).toFixed(2)}%</td>
-                  <td className="num">{r.contributionRounded.toFixed(2)}</td>
+                  <td className="num">{r.contributionRounded}%</td>
                 </tr>
               ))}
               <tr className="total">
@@ -266,24 +283,26 @@ export default function ApcReport({ code }: { code: string }) {
                   Weighted Average ETC Penetration — Σ(C×D)/Σ(D)
                 </td>
                 <td className="num">{table1.weightedPenetration.toFixed(2)}</td>
-                <td colSpan={3}></td>
-                <td className="num">{table1.contributionTotal.toFixed(2)}</td>
+                <td colSpan={2}></td>
+                <td className="num">{(table1.rows.reduce((s, r) => s + r.contribution, 0) * 100).toFixed(2)}%</td>
+                <td className="num">{table1.contributionTotal}%</td>
               </tr>
             </tbody>
           </table>
         </div>
         {!table1.roundOffOk && (
           <div className="warn">
-            Please CHECK Round off Contribution (total ≠ 1.00)
+            Please CHECK Round off Contribution (total ≠ 100%)
           </div>
         )}
       </section>
 
       {/* ---------------- Table 2 + chart ---------------- */}
       <section className="card">
-        <h2>Table 2 — Monthly Average Daily Collection (Seasonal Factor)</h2>
+        <h2>Table 2 — Monthly Average Daily ETC Collection</h2>
         <p className="card-note">
-          Months without data are excluded from the averages
+          Months without data are excluded from the averages. Annual Pass
+          compensation is shown for information only and is not part of B.
         </p>
         <div className="table-wrap">
           <table className="apc">
@@ -293,10 +312,8 @@ export default function ApcReport({ code }: { code: string }) {
                 <th className="num">
                   Monthly Average Daily Annual Pass Compensation
                 </th>
-                <th className="num">ETC Collection (avg daily)</th>
                 <th className="num">
-                  Monthly Average Daily ETC Collection as per Actual Fee Rates +
-                  Annual Pass Compensation
+                  ETC Collection (avg daily)
                   <span className="formula">A</span>
                 </th>
                 <th className="num">
@@ -314,7 +331,6 @@ export default function ApcReport({ code }: { code: string }) {
                   <td>{monthLabel(r.month)}</td>
                   <td className="num">{r.hasData ? fmtIN(r.apDaily, 2) : "—"}</td>
                   <td className="num">{r.hasData ? fmtIN(r.etcDaily, 2) : "—"}</td>
-                  <td className="num">{r.hasData ? fmtIN(r.totalDaily, 2) : "—"}</td>
                   <td className="num">{r.mfMultiplier.toFixed(4)}</td>
                   <td className="num">
                     {r.hasData ? fmtIN(r.normalizedDaily, 2) : "no data"}
@@ -324,8 +340,7 @@ export default function ApcReport({ code }: { code: string }) {
               <tr className="average">
                 <td>Average</td>
                 <td className="num">{fmtIN(table2.avgApDaily, 2)}</td>
-                <td className="num"></td>
-                <td className="num">{fmtIN(table2.avgTotalDaily, 2)}</td>
+                <td className="num">{fmtIN(table2.avgEtcDaily, 2)}</td>
                 <td className="num"></td>
                 <td className="num">{fmtIN(table2.avgNormalizedDaily, 2)}</td>
               </tr>
@@ -363,48 +378,42 @@ export default function ApcReport({ code }: { code: string }) {
               </tr>
               <tr>
                 <td>3</td>
-                <td>Seasonal Factor (In decimal)</td>
-                <td className="num">-</td>
-                <td></td>
-              </tr>
-              <tr>
-                <td>4</td>
                 <td>Annual Average Daily Collection</td>
                 <td className="num">{fmtIN(table3.annualAvgDailyCollection, 2)}</td>
                 <td></td>
               </tr>
               <tr>
-                <td>5</td>
+                <td>4</td>
                 <td>Annual Expected Collection</td>
                 <td className="num">{fmtIN(table3.annualExpectedCollection, 2)}</td>
                 <td className="num">{fmtCr(table3.annualExpectedCollection)}</td>
               </tr>
               <tr>
-                <td>6</td>
+                <td>5</td>
                 <td>Traffic Growth (in %)</td>
                 <td className="num">{table3.trafficGrowthPct}</td>
                 <td></td>
               </tr>
               <tr>
-                <td>7</td>
+                <td>6</td>
                 <td>Net Expected Collection</td>
                 <td className="num">{fmtIN(table3.netExpectedCollection, 2)}</td>
                 <td className="num">{fmtCr(table3.netExpectedCollection)}</td>
               </tr>
               <tr>
-                <td>8</td>
+                <td>7</td>
                 <td>Less Administrative Charges</td>
                 <td className="num">{fmtIN(table3.adminCharges, 2)}</td>
                 <td className="num">{fmtCr(table3.adminCharges)}</td>
               </tr>
               <tr>
-                <td>9</td>
+                <td>8</td>
                 <td>Less Contractor Profit @5%</td>
                 <td className="num">{fmtIN(table3.contractorProfit, 2)}</td>
                 <td className="num">{fmtCr(table3.contractorProfit)}</td>
               </tr>
               <tr className="total">
-                <td>10</td>
+                <td>9</td>
                 <td>APC-2 (Cr)</td>
                 <td className="num">{table3.apcCr.toFixed(2)}</td>
                 <td className="num">{table3.apcCr.toFixed(2)} Cr.</td>

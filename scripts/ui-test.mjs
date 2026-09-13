@@ -85,15 +85,23 @@ check(
 const h1 = await page.$eval(".report-header h1", (e) => e.textContent);
 check("report shows plaza name", h1.includes("Hathitala"));
 
-// 5. Change growth to 5% -> Table 3 row 6 shows 5, APC changes
+// 5. Default growth is 5%; changing to 0% -> Table 3 row 5 shows 0, APC changes
+const growthDefault = await page.$eval("#growth", (e) => e.value);
+check(`traffic growth defaults to 5% (got ${growthDefault}%)`, growthDefault === "5");
 const apcBefore = await page.$eval(".apc-hero .value", (e) => e.textContent);
-await page.select("#growth", "5");
+await page.select("#growth", "0");
 await new Promise((r) => setTimeout(r, 400));
 const apcAfter = await page.$eval(".apc-hero .value", (e) => e.textContent);
 check(
-  `growth 0->5 recalculates APC live (${apcBefore} -> ${apcAfter})`,
+  `growth 5->0 recalculates APC live (${apcBefore} -> ${apcAfter})`,
   apcBefore !== apcAfter
 );
+// Table 1 round-off column must total 100%
+const roundoffTotal = await page.evaluate(() => {
+  const total = document.querySelector("table.apc tbody tr.total");
+  return total ? total.lastElementChild.textContent : null;
+});
+check(`Table 1 round-off total is 100% (got ${roundoffTotal})`, roundoffTotal === "100%");
 
 // 6. Add MF entry 2025-10-20 factor 1.05 -> Oct-25 multiplier 1.0306
 await page.evaluate(() => {
@@ -122,7 +130,7 @@ await new Promise((r) => setTimeout(r, 400));
 const octMult = await page.evaluate(() => {
   const rows = [...document.querySelectorAll("table.apc tbody tr")];
   const oct = rows.find((r) => r.textContent.startsWith("Oct-2025"));
-  return oct ? oct.children[4].textContent : null;
+  return oct ? oct.children[3].textContent : null;
 });
 check(
   `MF 1.05 eff 2025-10-20 gives Oct-25 multiplier 1.0306 (got ${octMult})`,

@@ -310,6 +310,34 @@ table.apc .formula {
   margin-top: 8px;
 }
 
+/* Growth-assumption alert (negative collection trend) */
+.alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  background: rgba(208, 59, 59, 0.06);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.alert strong {
+  color: var(--danger);
+}
+
+.btn.alert-action {
+  margin-left: auto;
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 550;
+  white-space: nowrap;
+}
+
 /* ---------- APC result ---------- */
 
 .apc-hero {

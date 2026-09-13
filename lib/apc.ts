@@ -47,14 +47,14 @@ export interface Table1Row {
   penetration: number; // C = A*100/B
   etcCollectionWithAp: number; // D = ETC collection + AP compensation
   derivedTotal: number; // E = D*100/C
-  contribution: number; // F = E / sum(E)
-  contributionRounded: number; // G
+  contribution: number; // F = E / sum(E), as a fraction
+  contributionRounded: number; // G = whole-number %, largest-remainder so sum(G) = 100
 }
 
 export interface Table1 {
   rows: Table1Row[];
   weightedPenetration: number; // sum(C*D)/sum(D)
-  contributionTotal: number; // sum(G), should be 1
+  contributionTotal: number; // sum(G) in %, always 100 when there is any collection
   roundOffOk: boolean;
 }
 
@@ -62,19 +62,22 @@ export interface Table2Row {
   month: string;
   days: number;
   hasData: boolean;
-  apDaily: number | null; // B
-  etcDaily: number | null; // C
-  totalDaily: number | null; // D = B + C
+  apDaily: number | null; // Annual Pass compensation per day (display only)
+  etcDaily: number | null; // A = ETC collection per day at actual fee rates
   mfMultiplier: number;
-  normalizedDaily: number | null; // E = D * multiplier
+  normalizedDaily: number | null; // B = A * MF multiplier
 }
 
 export interface Table2 {
   rows: Table2Row[];
-  avgApDaily: number;
-  avgTotalDaily: number; // average of D over months with data
-  avgNormalizedDaily: number; // average of E over months with data
+  avgApDaily: number; // display only, not used downstream
+  avgEtcDaily: number; // average of A over months with data
+  avgNormalizedDaily: number; // average of B over months with data
   monthsUsed: number;
+  /** Least-squares slope of B over the months with data (rupees/day per month). */
+  trendSlope: number;
+  /** True when the overall trend of B across the window is downward. */
+  negativeTrend: boolean;
 }
 
 export interface Table3 {
@@ -186,14 +189,15 @@ export function computeTable1(rows: MonthlyRow[], months: string[]): Table1 {
   });
 
   const sumDerived = base.reduce((s, r) => s + r.derivedTotal, 0);
-  const rows1: Table1Row[] = base.map((r) => {
-    const contribution = sumDerived > 0 ? r.derivedTotal / sumDerived : 0;
-    return {
-      ...r,
-      contribution,
-      contributionRounded: Math.round(contribution * 100) / 100,
-    };
-  });
+  const contributions = base.map((r) =>
+    sumDerived > 0 ? r.derivedTotal / sumDerived : 0
+  );
+  const roundedPct = roundPercentagesToTotal(contributions.map((c) => c * 100));
+  const rows1: Table1Row[] = base.map((r, i) => ({
+    ...r,
+    contribution: contributions[i],
+    contributionRounded: roundedPct[i],
+  }));
 
   const sumD = base.reduce((s, r) => s + r.etcCollectionWithAp, 0);
   const weightedPenetration =
@@ -206,8 +210,29 @@ export function computeTable1(rows: MonthlyRow[], months: string[]): Table1 {
     rows: rows1,
     weightedPenetration,
     contributionTotal,
-    roundOffOk: Math.abs(contributionTotal - 1) < 1e-9,
+    roundOffOk: sumDerived <= 0 || Math.abs(contributionTotal - 100) < 1e-9,
   };
+}
+
+/**
+ * Round percentages to whole numbers so that they still add up to exactly
+ * 100 (largest-remainder method). Returns all zeros if the inputs sum to 0.
+ */
+export function roundPercentagesToTotal(pcts: number[], total = 100): number[] {
+  const sum = pcts.reduce((s, v) => s + v, 0);
+  if (sum <= 0) return pcts.map(() => 0);
+  const scaled = pcts.map((v) => (v * total) / sum);
+  const floors = scaled.map(Math.floor);
+  let remaining = total - floors.reduce((s, v) => s + v, 0);
+  const order = scaled
+    .map((v, i) => ({ i, frac: v - floors[i] }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (const { i } of order) {
+    if (remaining <= 0) break;
+    floors[i] += 1;
+    remaining -= 1;
+  }
+  return floors;
 }
 
 export function computeTable2(
@@ -229,23 +254,24 @@ export function computeTable2(
     const b = byMonth.get(m)!;
     const days = daysInMonth(m);
     const mult = mfMultiplier(m, mfEntries);
-    // A month with no rows or zero collection is excluded (Excel AVERAGEIF "<>0").
-    const hasData = b.any && b.etc + b.ap > 0;
+    // A month with no rows or zero ETC collection is excluded (Excel AVERAGEIF "<>0").
+    const hasData = b.any && b.etc > 0;
     if (!hasData) {
       return {
         month: m, days, hasData: false,
-        apDaily: null, etcDaily: null, totalDaily: null,
+        apDaily: null, etcDaily: null,
         mfMultiplier: mult, normalizedDaily: null,
       };
     }
     const apDaily = b.ap / days;
     const etcDaily = b.etc / days;
-    const totalDaily = apDaily + etcDaily;
     return {
       month: m, days, hasData: true,
-      apDaily, etcDaily, totalDaily,
+      apDaily, etcDaily,
       mfMultiplier: mult,
-      normalizedDaily: totalDaily * mult,
+      // Annual Pass compensation is shown for information only; the
+      // normalized figure is ETC collection at revised fee rates.
+      normalizedDaily: etcDaily * mult,
     };
   });
 
@@ -253,19 +279,51 @@ export function computeTable2(
   const avg = (f: (r: Table2Row) => number) =>
     used.length > 0 ? used.reduce((s, r) => s + f(r), 0) / used.length : 0;
 
+  const trendSlope = linearTrendSlope(
+    out.map((r) => r.normalizedDaily)
+  );
+
   return {
     rows: out,
     avgApDaily: avg((r) => r.apDaily!),
-    avgTotalDaily: avg((r) => r.totalDaily!),
+    avgEtcDaily: avg((r) => r.etcDaily!),
     avgNormalizedDaily: avg((r) => r.normalizedDaily!),
     monthsUsed: used.length,
+    trendSlope,
+    negativeTrend: trendSlope < 0,
   };
 }
+
+/**
+ * Least-squares slope of a series indexed by position (month number in the
+ * window); null entries (months without data) are skipped. Returns 0 when
+ * fewer than two points are available.
+ */
+export function linearTrendSlope(values: (number | null)[]): number {
+  const pts: [number, number][] = [];
+  values.forEach((v, i) => {
+    if (v !== null && v !== undefined && Number.isFinite(v)) pts.push([i, v]);
+  });
+  if (pts.length < 2) return 0;
+  const n = pts.length;
+  const meanX = pts.reduce((s, [x]) => s + x, 0) / n;
+  const meanY = pts.reduce((s, [, y]) => s + y, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (const [x, y] of pts) {
+    sxy += (x - meanX) * (y - meanY);
+    sxx += (x - meanX) ** 2;
+  }
+  return sxx > 0 ? sxy / sxx : 0;
+}
+
+/** Default traffic growth assumption (%). Use 0% when the collection trend is negative. */
+export const DEFAULT_TRAFFIC_GROWTH_PCT = 5;
 
 export function computeTable3(
   avgDailyFastagCollection: number,
   fastagPenetration: number,
-  trafficGrowthPct: number
+  trafficGrowthPct: number = DEFAULT_TRAFFIC_GROWTH_PCT
 ): Table3 {
   const growth = Math.max(0, trafficGrowthPct); // 0% if negative
   const annualAvgDailyCollection =
@@ -301,7 +359,7 @@ export function computeApc(
   rows: MonthlyRow[],
   uptoMonth: string,
   mfEntries: MfEntry[],
-  trafficGrowthPct: number
+  trafficGrowthPct: number = DEFAULT_TRAFFIC_GROWTH_PCT
 ): ApcResult {
   const months = windowMonths(uptoMonth);
   const table1 = computeTable1(rows, months);
