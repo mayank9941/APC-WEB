@@ -297,6 +297,37 @@ table.apc tr.excluded td {
   color: var(--muted);
 }
 
+table.apc tr.imputed td {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+table.apc .badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--baseline);
+  font-size: 10.5px;
+  font-style: normal;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+table.apc .sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--muted);
+}
+
+.export-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 table.apc .formula {
   display: block;
   font-size: 11.5px;

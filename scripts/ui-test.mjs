@@ -85,7 +85,7 @@ check(
 const h1 = await page.$eval(".report-header h1", (e) => e.textContent);
 check("report shows plaza name", h1.includes("Hathitala"));
 
-// 5. Default growth is 5%; changing to 0% -> Table 3 row 5 shows 0, APC changes
+// 5. Default growth is 5%; changing to 0% -> Table 3 row 5 shows 0%, APC changes
 const growthDefault = await page.$eval("#growth", (e) => e.value);
 check(`traffic growth defaults to 5% (got ${growthDefault}%)`, growthDefault === "5");
 const apcBefore = await page.$eval(".apc-hero .value", (e) => e.textContent);

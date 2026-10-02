@@ -7,13 +7,15 @@ import {
   MfEntry,
   MonthlyRow,
   computeApc,
-  fmtCr,
   fmtIN,
+  fmtMoney,
   lastCompletedMonth,
   monthLabel,
 } from "@/lib/apc";
 import CollectionChart from "./CollectionChart";
 import { exportApcXlsx } from "@/lib/exportXlsx";
+import { exportApcPdf } from "@/lib/exportPdf";
+import { exportApcDocx } from "@/lib/exportDocx";
 
 interface ApiResponse {
   plaza: { code: number; name: string };
@@ -100,7 +102,10 @@ export default function ApcReport({ code }: { code: string }) {
       <p className="report-subtitle">
         APC for {monthLabel(uptoMonth)} — window {monthLabel(months[0])} to{" "}
         {monthLabel(months[11])} ({table2.monthsUsed} month
-        {table2.monthsUsed === 1 ? "" : "s"} with data)
+        {table2.monthsUsed === 1 ? "" : "s"} with data
+        {table2.monthsImputed > 0 &&
+          `, ${table2.monthsImputed} filled with the average`}
+        )
       </p>
 
       <div className="apc-hero top">
@@ -111,14 +116,32 @@ export default function ApcReport({ code }: { code: string }) {
             [Rs {fmtIN(table3.apcPerDay)} per day]
           </span>
         </div>
-        <button
-          className="btn export"
-          onClick={() =>
-            exportApcXlsx(data.plaza, result, uptoMonth, mfEntries, growth)
-          }
-        >
-          ⬇ Export to Excel
-        </button>
+        <div className="export-group">
+          <button
+            className="btn export"
+            onClick={() =>
+              exportApcPdf(data.plaza, result, uptoMonth, mfEntries, growth)
+            }
+          >
+            ⬇ PDF
+          </button>
+          <button
+            className="btn export"
+            onClick={() =>
+              exportApcDocx(data.plaza, result, uptoMonth, mfEntries, growth)
+            }
+          >
+            ⬇ Word
+          </button>
+          <button
+            className="btn export"
+            onClick={() =>
+              exportApcXlsx(data.plaza, result, uptoMonth, mfEntries, growth)
+            }
+          >
+            ⬇ Excel
+          </button>
+        </div>
       </div>
 
       <div className="controls">
@@ -301,8 +324,9 @@ export default function ApcReport({ code }: { code: string }) {
       <section className="card">
         <h2>Table 2 — Monthly Average Daily ETC Collection</h2>
         <p className="card-note">
-          Months without data are excluded from the averages. Annual Pass
-          compensation is shown for information only and is not part of B.
+          Annual Pass compensation is shown for information only and is not
+          part of B. Months marked <em>avg</em> had no data and take the
+          average of the months that do.
         </p>
         <div className="table-wrap">
           <table className="apc">
@@ -326,17 +350,26 @@ export default function ApcReport({ code }: { code: string }) {
               </tr>
             </thead>
             <tbody>
-              {table2.rows.map((r) => (
-                <tr key={r.month} className={r.hasData ? "" : "excluded"}>
-                  <td>{monthLabel(r.month)}</td>
-                  <td className="num">{r.hasData ? fmtIN(r.apDaily, 2) : "—"}</td>
-                  <td className="num">{r.hasData ? fmtIN(r.etcDaily, 2) : "—"}</td>
-                  <td className="num">{r.mfMultiplier.toFixed(4)}</td>
-                  <td className="num">
-                    {r.hasData ? fmtIN(r.normalizedDaily, 2) : "no data"}
-                  </td>
-                </tr>
-              ))}
+              {table2.rows.map((r) => {
+                const filled = r.etcDaily !== null;
+                return (
+                  <tr
+                    key={r.month}
+                    className={r.imputed ? "imputed" : filled ? "" : "excluded"}
+                  >
+                    <td>
+                      {monthLabel(r.month)}
+                      {r.imputed && <span className="badge">avg</span>}
+                    </td>
+                    <td className="num">{filled ? fmtIN(r.apDaily, 2) : "—"}</td>
+                    <td className="num">{filled ? fmtIN(r.etcDaily, 2) : "—"}</td>
+                    <td className="num">{r.mfMultiplier.toFixed(4)}</td>
+                    <td className="num">
+                      {filled ? fmtIN(r.normalizedDaily, 2) : "no data"}
+                    </td>
+                  </tr>
+                );
+              })}
               <tr className="average">
                 <td>Average</td>
                 <td className="num">{fmtIN(table2.avgApDaily, 2)}</td>
@@ -354,7 +387,8 @@ export default function ApcReport({ code }: { code: string }) {
         <p className="card-note">₹ per day, by month — column B of Table 2</p>
         <CollectionChart rows={table2.rows} />
         <p className="chart-note">
-          Gaps indicate months with no data (excluded from the calculation).
+          Hollow points are months with no data, filled with the average of the
+          months that have data.
         </p>
       </section>
 
@@ -367,56 +401,50 @@ export default function ApcReport({ code }: { code: string }) {
               <tr>
                 <td>1</td>
                 <td>Average Daily FASTag Collection</td>
-                <td className="num">{fmtIN(table3.avgDailyFastagCollection, 2)}</td>
-                <td></td>
+                <td className="num">{fmtMoney(table3.avgDailyFastagCollection)}</td>
               </tr>
               <tr>
                 <td>2</td>
-                <td>FASTag Penetration (In decimal)</td>
+                <td>FASTag Penetration (in %)</td>
                 <td className="num">{table3.fastagPenetration.toFixed(2)}</td>
-                <td></td>
               </tr>
               <tr>
                 <td>3</td>
                 <td>Annual Average Daily Collection</td>
-                <td className="num">{fmtIN(table3.annualAvgDailyCollection, 2)}</td>
-                <td></td>
+                <td className="num">{fmtMoney(table3.annualAvgDailyCollection)}</td>
               </tr>
               <tr>
                 <td>4</td>
                 <td>Annual Expected Collection</td>
-                <td className="num">{fmtIN(table3.annualExpectedCollection, 2)}</td>
-                <td className="num">{fmtCr(table3.annualExpectedCollection)}</td>
+                <td className="num">{fmtMoney(table3.annualExpectedCollection)}</td>
               </tr>
               <tr>
                 <td>5</td>
                 <td>Traffic Growth (in %)</td>
-                <td className="num">{table3.trafficGrowthPct}</td>
-                <td></td>
+                <td className="num">{table3.trafficGrowthPct}%</td>
               </tr>
               <tr>
                 <td>6</td>
                 <td>Net Expected Collection</td>
-                <td className="num">{fmtIN(table3.netExpectedCollection, 2)}</td>
-                <td className="num">{fmtCr(table3.netExpectedCollection)}</td>
+                <td className="num">{fmtMoney(table3.netExpectedCollection)}</td>
               </tr>
               <tr>
                 <td>7</td>
                 <td>Less Administrative Charges</td>
-                <td className="num">{fmtIN(table3.adminCharges, 2)}</td>
-                <td className="num">{fmtCr(table3.adminCharges)}</td>
+                <td className="num">{fmtMoney(table3.adminCharges)}</td>
               </tr>
               <tr>
                 <td>8</td>
                 <td>Less Contractor Profit @5%</td>
-                <td className="num">{fmtIN(table3.contractorProfit, 2)}</td>
-                <td className="num">{fmtCr(table3.contractorProfit)}</td>
+                <td className="num">{fmtMoney(table3.contractorProfit)}</td>
               </tr>
               <tr className="total">
                 <td>9</td>
-                <td>APC-2 (Cr)</td>
-                <td className="num">{table3.apcCr.toFixed(2)}</td>
-                <td className="num">{table3.apcCr.toFixed(2)} Cr.</td>
+                <td>APC-2</td>
+                <td className="num">
+                  {fmtMoney(table3.apcCr * 1e7)}
+                  <span className="sub">₹ {fmtIN(table3.apcPerDay)} per day</span>
+                </td>
               </tr>
             </tbody>
           </table>

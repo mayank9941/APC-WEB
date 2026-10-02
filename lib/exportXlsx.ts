@@ -2,7 +2,8 @@
 // laid out like the approved "2. APC" reference sheet.
 
 import type { ApcResult, MfEntry } from "./apc";
-import { monthLabel } from "./apc";
+import { fmtIN, fmtShort, monthLabel } from "./apc";
+import { downloadBlob } from "./download";
 
 const BOLD = { bold: true };
 const NUM2 = "#,##0.00";
@@ -33,9 +34,11 @@ export async function exportApcXlsx(
   title.font = { bold: true, size: 14 };
 
   ws.addRow(["Calculated up to", monthLabel(uptoMonth)]);
+  const imputed = table2.rows.filter((r) => r.imputed).map((r) => monthLabel(r.month));
   ws.addRow([
     "12-month window",
-    `${monthLabel(months[0])} to ${monthLabel(months[11])} (${table2.monthsUsed} months with data)`,
+    `${monthLabel(months[0])} to ${monthLabel(months[11])} (${table2.monthsUsed} months with data` +
+      (imputed.length ? `, ${imputed.length} filled with the average: ${imputed.join(", ")})` : ")"),
   ]);
   ws.addRow([
     "Traffic growth (%)",
@@ -99,7 +102,8 @@ export async function exportApcXlsx(
   ws.addRow([]);
   ws.addRow(["Table 2 — Monthly Average Daily ETC Collection"]).font = BOLD;
   ws.addRow([
-    "Annual Pass compensation is shown for information only and is not part of B.",
+    "Annual Pass compensation is shown for information only and is not part of B. " +
+      "Months marked (avg) had no data and take the average of the months that do.",
   ]);
   const h2 = ws.addRow([
     "Month", "Avg Daily AP Compensation (info)", "Avg Daily ETC Collection (A)",
@@ -108,15 +112,17 @@ export async function exportApcXlsx(
   h2.font = BOLD;
   h2.alignment = { wrapText: true, vertical: "top" };
   for (const r of table2.rows) {
+    const filled = r.etcDaily !== null;
     const row = ws.addRow([
-      monthLabel(r.month),
-      r.hasData ? r.apDaily : "—",
-      r.hasData ? r.etcDaily : "—",
+      monthLabel(r.month) + (r.imputed ? " (avg)" : ""),
+      filled ? r.apDaily : "—",
+      filled ? r.etcDaily : "—",
       r.mfMultiplier,
-      r.hasData ? r.normalizedDaily : "no data",
+      filled ? r.normalizedDaily : "no data",
     ]);
     for (const c of [2, 3, 5]) row.getCell(c).numFmt = NUM2;
     row.getCell(4).numFmt = NUM4;
+    if (r.imputed) row.font = { italic: true, color: { argb: "FF52514E" } };
   }
   const t2avg = ws.addRow([
     "Average",
@@ -128,20 +134,23 @@ export async function exportApcXlsx(
   // ---- Table 3 ----
   ws.addRow([]);
   ws.addRow(["Table 3 — Calculation of APC-2"]).font = BOLD;
-  const t3: [number, string, number | string, string][] = [
-    [1, "Average Daily FASTag Collection", table3.avgDailyFastagCollection, ""],
-    [2, "FASTag Penetration (In decimal)", table3.fastagPenetration, ""],
-    [3, "Annual Average Daily Collection", table3.annualAvgDailyCollection, ""],
-    [4, "Annual Expected Collection", table3.annualExpectedCollection, cr(table3.annualExpectedCollection)],
-    [5, "Traffic Growth (in %)", table3.trafficGrowthPct, ""],
-    [6, "Net Expected Collection", table3.netExpectedCollection, cr(table3.netExpectedCollection)],
-    [7, "Less Administrative Charges", table3.adminCharges, cr(table3.adminCharges)],
-    [8, "Less Contractor Profit @5%", table3.contractorProfit, cr(table3.contractorProfit)],
-    [9, "APC-2 (Cr)", table3.apcCr, `${table3.apcCr.toFixed(2)} Cr.`],
+  const h3 = ws.addRow(["#", "Item", "Value (Rs)"]);
+  h3.font = BOLD;
+  // Rupee values carry their short form inline, e.g. 3,40,14,000 (3.40 Cr.)
+  const t3: [number, string, string][] = [
+    [1, "Average Daily FASTag Collection", money(table3.avgDailyFastagCollection)],
+    [2, "FASTag Penetration (in %)", table3.fastagPenetration.toFixed(2)],
+    [3, "Annual Average Daily Collection", money(table3.annualAvgDailyCollection)],
+    [4, "Annual Expected Collection", money(table3.annualExpectedCollection)],
+    [5, "Traffic Growth (in %)", `${table3.trafficGrowthPct}%`],
+    [6, "Net Expected Collection", money(table3.netExpectedCollection)],
+    [7, "Less Administrative Charges", money(table3.adminCharges)],
+    [8, "Less Contractor Profit @5%", money(table3.contractorProfit)],
+    [9, "APC-2", `${money(table3.apcCr * 1e7)} = Rs ${fmtIN(table3.apcPerDay)} per day`],
   ];
-  for (const [n, label, value, inCr] of t3) {
-    const row = ws.addRow([n, label, value, inCr]);
-    if (typeof value === "number") row.getCell(3).numFmt = NUM2;
+  for (const [n, label, value] of t3) {
+    const row = ws.addRow([n, label, value]);
+    row.getCell(3).alignment = { horizontal: "right" };
     if (n === 9) row.font = BOLD;
   }
 
@@ -149,14 +158,9 @@ export async function exportApcXlsx(
   const blob = new Blob([buf], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `APC_${plaza.code}_${uptoMonth}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, `APC_${plaza.code}_${uptoMonth}.xlsx`);
 }
 
-function cr(n: number): string {
-  return `${(n / 1e7).toFixed(2)} Cr.`;
+function money(n: number): string {
+  return Math.abs(n) < 1e3 ? fmtIN(n, 0) : `${fmtIN(n, 0)} (${fmtShort(n)})`;
 }

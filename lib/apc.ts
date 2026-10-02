@@ -61,7 +61,10 @@ export interface Table1 {
 export interface Table2Row {
   month: string;
   days: number;
+  /** True when the month has actual collection data. */
   hasData: boolean;
+  /** True when the month had no data and A / AP were filled with the average of the months that do. */
+  imputed: boolean;
   apDaily: number | null; // Annual Pass compensation per day (display only)
   etcDaily: number | null; // A = ETC collection per day at actual fee rates
   mfMultiplier: number;
@@ -71,10 +74,13 @@ export interface Table2Row {
 export interface Table2 {
   rows: Table2Row[];
   avgApDaily: number; // display only, not used downstream
-  avgEtcDaily: number; // average of A over months with data
-  avgNormalizedDaily: number; // average of B over months with data
+  avgEtcDaily: number; // average of A over all 12 months (imputed months included)
+  avgNormalizedDaily: number; // average of B over all 12 months (imputed months included)
+  /** Months with actual data. */
   monthsUsed: number;
-  /** Least-squares slope of B over the months with data (rupees/day per month). */
+  /** Months filled with the average of the months that have data. */
+  monthsImputed: number;
+  /** Least-squares slope of B over the months with actual data (rupees/day per month). */
   trendSlope: number;
   /** True when the overall trend of B across the window is downward. */
   negativeTrend: boolean;
@@ -250,15 +256,15 @@ export function computeTable2(
     b.any = true;
   }
 
-  const out: Table2Row[] = months.map((m) => {
+  const actual: Table2Row[] = months.map((m) => {
     const b = byMonth.get(m)!;
     const days = daysInMonth(m);
     const mult = mfMultiplier(m, mfEntries);
-    // A month with no rows or zero ETC collection is excluded (Excel AVERAGEIF "<>0").
+    // A month with no rows or zero ETC collection has no usable data.
     const hasData = b.any && b.etc > 0;
     if (!hasData) {
       return {
-        month: m, days, hasData: false,
+        month: m, days, hasData: false, imputed: false,
         apDaily: null, etcDaily: null,
         mfMultiplier: mult, normalizedDaily: null,
       };
@@ -266,7 +272,7 @@ export function computeTable2(
     const apDaily = b.ap / days;
     const etcDaily = b.etc / days;
     return {
-      month: m, days, hasData: true,
+      month: m, days, hasData: true, imputed: false,
       apDaily, etcDaily,
       mfMultiplier: mult,
       // Annual Pass compensation is shown for information only; the
@@ -275,20 +281,38 @@ export function computeTable2(
     };
   });
 
-  const used = out.filter((r) => r.hasData);
-  const avg = (f: (r: Table2Row) => number) =>
-    used.length > 0 ? used.reduce((s, r) => s + f(r), 0) / used.length : 0;
+  const used = actual.filter((r) => r.hasData);
+  const avgOf = (list: Table2Row[], f: (r: Table2Row) => number) =>
+    list.length > 0 ? list.reduce((s, r) => s + f(r), 0) / list.length : 0;
+  const fillEtc = avgOf(used, (r) => r.etcDaily!);
+  const fillAp = avgOf(used, (r) => r.apDaily!);
 
+  // Months without data take the average of the months that have data
+  // (A and AP), then get their own MF multiplier applied for B.
+  const out: Table2Row[] = actual.map((r) => {
+    if (r.hasData || used.length === 0) return r;
+    return {
+      ...r,
+      imputed: true,
+      apDaily: fillAp,
+      etcDaily: fillEtc,
+      normalizedDaily: fillEtc * r.mfMultiplier,
+    };
+  });
+
+  const filled = out.filter((r) => r.etcDaily !== null);
+  // Trend is judged on actual data only; imputed months would flatten it.
   const trendSlope = linearTrendSlope(
-    out.map((r) => r.normalizedDaily)
+    actual.map((r) => r.normalizedDaily)
   );
 
   return {
     rows: out,
-    avgApDaily: avg((r) => r.apDaily!),
-    avgEtcDaily: avg((r) => r.etcDaily!),
-    avgNormalizedDaily: avg((r) => r.normalizedDaily!),
+    avgApDaily: avgOf(filled, (r) => r.apDaily!),
+    avgEtcDaily: avgOf(filled, (r) => r.etcDaily!),
+    avgNormalizedDaily: avgOf(filled, (r) => r.normalizedDaily!),
     monthsUsed: used.length,
+    monthsImputed: out.filter((r) => r.imputed).length,
     trendSlope,
     negativeTrend: trendSlope < 0,
   };
@@ -384,6 +408,21 @@ export function fmtIN(n: number | null | undefined, digits = 0): string {
 
 export function fmtCr(n: number): string {
   return `${(n / 1e7).toFixed(2)} Cr.`;
+}
+
+/** Short Indian form: 3.40 Cr. / 8.85 L / 34.0 k / 950 */
+export function fmtShort(n: number): string {
+  const a = Math.abs(n);
+  if (a >= 1e7) return `${(n / 1e7).toFixed(2)} Cr.`;
+  if (a >= 1e5) return `${(n / 1e5).toFixed(2)} L`;
+  if (a >= 1e3) return `${(n / 1e3).toFixed(1)} k`;
+  return fmtIN(n, 0);
+}
+
+/** Rupee amount with its short form inline, e.g. "3,40,14,000 (3.40 Cr.)". */
+export function fmtMoney(n: number): string {
+  if (Math.abs(n) < 1e3) return fmtIN(n, 0);
+  return `${fmtIN(n, 0)} (${fmtShort(n)})`;
 }
 
 export function monthLabel(monthKey: string): string {
