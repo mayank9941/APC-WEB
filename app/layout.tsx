@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { SiteFooter, SiteHeader } from "@/components/SiteHeader";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,6 +17,7 @@ export const metadata: Metadata = {
   title: "APC 2.0 — Annual Potential Collection | Point Based Plazas",
   description:
     "Annual Potential Collection calculator for NHAI point-based toll plazas",
+  icons: { icon: "/nhai-logo.png" },
 };
 
 export default function RootLayout({
@@ -25,7 +27,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <SiteHeader />
+        {children}
+        <SiteFooter />
+      </body>
     </html>
   );
 }
