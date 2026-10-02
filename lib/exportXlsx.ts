@@ -1,8 +1,8 @@
 // Client-side Excel export of one APC calculation (inputs + Tables 1-3),
 // laid out like the approved "2. APC" reference sheet.
 
-import type { ApcResult, MfEntry } from "./apc";
-import { fmtIN, fmtShort, monthLabel } from "./apc";
+import type { ApcResult, MfEntry, PlazaInfo } from "./apc";
+import { fmtIN, fmtShort, mfFactor, monthLabel } from "./apc";
 import { downloadBlob } from "./download";
 
 const BOLD = { bold: true };
@@ -11,14 +11,14 @@ const NUM4 = "0.0000";
 const INT = "#,##0";
 
 export async function exportApcXlsx(
-  plaza: { code: number; name: string },
+  plaza: PlazaInfo,
   result: ApcResult,
   uptoMonth: string,
   mfEntries: MfEntry[],
   growth: number
 ) {
   const ExcelJS = (await import("exceljs")).default;
-  const { table1, table2, table3, months } = result;
+  const { table1, table2, table3, table4, months } = result;
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("APC", {
@@ -47,13 +47,27 @@ export async function exportApcXlsx(
       ? "Alert: ETC collection trend is negative — growth should be taken as 0%"
       : "",
   ]);
-  const validMf = mfEntries.filter((e) => e.date && e.factor > 0);
+  const validMf = mfEntries.filter((e) => e.date && mfFactor(e) > 0);
   ws.addRow([
     "MF revisions",
     validMf.length
-      ? validMf.map((e) => `${e.date}: ${e.factor}`).join(", ")
+      ? validMf
+          .map((e) =>
+            e.oldRemittance && e.newRemittance
+              ? `${e.date}: ${fmtIN(e.oldRemittance)} -> ${fmtIN(e.newRemittance)} (MF ${mfFactor(e).toFixed(4)})`
+              : `${e.date}: MF ${mfFactor(e).toFixed(4)}`
+          )
+          .join(", ")
       : "none",
   ]);
+  const infoBits = [
+    plaza.lanes != null && plaza.lanes !== "" ? `Lanes: ${plaza.lanes}` : "",
+    plaza.type ? `Type: ${plaza.type}` : "",
+    plaza.piu ? `PIU: ${plaza.piu}` : "",
+    plaza.ro ? `RO: ${plaza.ro}` : "",
+    plaza.state ? `State: ${plaza.state}` : "",
+  ].filter(Boolean);
+  if (infoBits.length) ws.addRow(["Plaza details", infoBits.join("; ")]);
   const hero = ws.addRow([
     "APC-2",
     `Rs ${table3.apcCr.toFixed(2)} Cr.`,
@@ -66,8 +80,8 @@ export async function exportApcXlsx(
   ws.addRow(["Table 1 — Calculation of ETC Penetration (12 Completed Calendar Months)"]).font = BOLD;
   const h1 = ws.addRow([
     "Category of Vehicle", "NPCI Codes",
-    "ETC Transactions (A)", "Cash + UPI", "50% of Exempted",
-    "Total TMCC (B)", "% ETC Penetration (C = A×100/B)",
+    "ETC Transactions (A)", "Cash + UPI (B1)", "Exempted (B2)",
+    "Total for APC (B = A + B1 + 50% of B2)", "% ETC Penetration (C = A×100/B)",
     "ETC Collection + AP Compensation (D)", "Derived Total (E = D×100/C)",
     "% Contribution (F = E/ΣE)", "Revenue Contribution Roundoff % (G, ΣG = 100)",
   ]);
@@ -76,13 +90,12 @@ export async function exportApcXlsx(
   for (const r of table1.rows) {
     const row = ws.addRow([
       r.category, r.npciCodes,
-      r.etcTxn, r.cashUpiTxn, r.exemptHalf, r.totalTxn,
+      r.etcTxn, r.cashUpiTxn, r.exemptTxn, r.totalTxn,
       r.penetration, r.etcCollectionWithAp, r.derivedTotal,
       r.contribution * 100, r.contributionRounded,
     ]);
-    row.getCell(3).numFmt = INT;
-    row.getCell(4).numFmt = INT;
-    for (const c of [5, 6, 8, 9]) row.getCell(c).numFmt = NUM2;
+    for (const c of [3, 4, 5]) row.getCell(c).numFmt = INT;
+    for (const c of [6, 8, 9]) row.getCell(c).numFmt = NUM2;
     for (const c of [7, 10]) row.getCell(c).numFmt = "0.00";
     row.getCell(11).numFmt = '0"%"';
   }
@@ -152,6 +165,26 @@ export async function exportApcXlsx(
     const row = ws.addRow([n, label, value]);
     row.getCell(3).alignment = { horizontal: "right" };
     if (n === 9) row.font = BOLD;
+  }
+
+  // ---- Table 4 ----
+  ws.addRow([]);
+  ws.addRow(["Table 4 — Calculation of APC-3"]).font = BOLD;
+  if (table4) {
+    const t4: [string, number | string][] = [
+      ["Present Remittance (Yearly)", table4.presentRemittanceYearly],
+      ["Present Annual Pass Compensation (Yearly)", table4.presentApCompensationYearly],
+      ["Net Remittance", table4.netRemittance],
+      ["Increment (%)", table4.incrementPct],
+      ["APC-3 (Cr)", table4.apc3Cr],
+    ];
+    for (const [label, value] of t4) {
+      const row = ws.addRow(["", label, value]);
+      if (typeof value === "number") row.getCell(3).numFmt = NUM2;
+      if (label.startsWith("APC-3")) row.font = BOLD;
+    }
+  } else {
+    ws.addRow(["", "Enter old/new remittance for an MF revision to compute APC-3."]);
   }
 
   const buf = await wb.xlsx.writeBuffer();

@@ -34,16 +34,38 @@ export interface MonthlyRow {
 
 export interface MfEntry {
   date: string; // effective date "YYYY-MM-DD"
-  factor: number; // new rate / old rate
+  factor: number; // new rate / old rate (= newRemittance / oldRemittance when both given)
+  oldRemittance?: number; // daily remittance before the revision (Rs)
+  newRemittance?: number; // daily remittance after the revision (Rs)
+}
+
+/** Factor implied by the remittances, or the stored factor when they are absent. */
+export function mfFactor(e: MfEntry): number {
+  if (e.oldRemittance && e.newRemittance && e.oldRemittance > 0) {
+    return e.newRemittance / e.oldRemittance;
+  }
+  return e.factor;
+}
+
+/** Plaza master data; fields other than code/name are optional. */
+export interface PlazaInfo {
+  code: number;
+  name: string;
+  lanes?: number | string | null;
+  type?: string | null;
+  piu?: string | null;
+  ro?: string | null;
+  state?: string | null;
 }
 
 export interface Table1Row {
   category: string;
   npciCodes: string;
   etcTxn: number; // A
-  cashUpiTxn: number;
-  exemptHalf: number;
-  totalTxn: number; // B = ETC + Cash + UPI + 50% exempt
+  cashUpiTxn: number; // B1
+  exemptTxn: number; // B2 (full exempted count)
+  exemptHalf: number; // 50% of B2
+  totalTxn: number; // B = A + B1 + 50% of B2
   penetration: number; // C = A*100/B
   etcCollectionWithAp: number; // D = ETC collection + AP compensation
   derivedTotal: number; // E = D*100/C
@@ -84,6 +106,16 @@ export interface Table2 {
   trendSlope: number;
   /** True when the overall trend of B across the window is downward. */
   negativeTrend: boolean;
+}
+
+export interface Table4 {
+  newRemittanceDaily: number; // latest revised daily remittance (Rs)
+  presentRemittanceYearly: number; // x 365
+  latestApDaily: number; // latest month's average daily AP compensation
+  presentApCompensationYearly: number; // x 365
+  netRemittance: number; // present remittance - AP compensation
+  incrementPct: number;
+  apc3Cr: number; // net remittance x (1 + increment), in crores
 }
 
 export interface Table3 {
@@ -131,14 +163,15 @@ export function lastCompletedMonth(now: Date = new Date()): string {
 export function mfMultiplier(monthKey: string, entries: MfEntry[]): number {
   let mult = 1;
   for (const e of entries) {
-    if (!e.date || !e.factor || e.factor <= 0) continue;
+    const f = mfFactor(e);
+    if (!e.date || !f || f <= 0) continue;
     const effMonth = e.date.slice(0, 7);
     if (monthKey < effMonth) {
-      mult *= e.factor;
+      mult *= f;
     } else if (monthKey === effMonth) {
       const k = Number(e.date.slice(8, 10));
       const n = daysInMonth(monthKey);
-      mult *= ((k - 1) * e.factor + (n - k + 1)) / n;
+      mult *= ((k - 1) * f + (n - k + 1)) / n;
     }
     // months on/after the revision month: factor already reflected -> *1
   }
@@ -186,6 +219,7 @@ export function computeTable1(rows: MonthlyRow[], months: string[]): Table1 {
       npciCodes: NPCI_CODES[cat],
       etcTxn: t.etc_cnt,
       cashUpiTxn: t.cash_cnt + t.upi_cnt,
+      exemptTxn: t.exempt_cnt,
       exemptHalf: 0.5 * t.exempt_cnt,
       totalTxn: t.tmcc_total,
       penetration,
@@ -344,6 +378,42 @@ export function linearTrendSlope(values: (number | null)[]): number {
 /** Default traffic growth assumption (%). Use 0% when the collection trend is negative. */
 export const DEFAULT_TRAFFIC_GROWTH_PCT = 5;
 
+/** Default yearly increment (%) applied to the net remittance for APC-3. */
+export const DEFAULT_INCREMENT_PCT = 2.5;
+
+/**
+ * Table 4 (APC-3): present remittance from the latest fee revision, less the
+ * present Annual Pass compensation, grown by the increment. Returns null when
+ * no revision with a new remittance has been entered.
+ */
+export function computeTable4(
+  mfEntries: MfEntry[],
+  table2: Table2,
+  incrementPct: number = DEFAULT_INCREMENT_PCT
+): Table4 | null {
+  const withRemittance = mfEntries
+    .filter((e) => e.date && e.newRemittance && e.newRemittance > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const latest = withRemittance[withRemittance.length - 1];
+  if (!latest) return null;
+  const actual = table2.rows.filter((r) => r.hasData);
+  const latestApDaily = actual.length ? actual[actual.length - 1].apDaily! : 0;
+  const newRemittanceDaily = latest.newRemittance!;
+  const presentRemittanceYearly = newRemittanceDaily * 365;
+  const presentApCompensationYearly = latestApDaily * 365;
+  const netRemittance = presentRemittanceYearly - presentApCompensationYearly;
+  const apc3Cr = Math.round((netRemittance * (1 + incrementPct / 100)) / 1e7 * 100) / 100;
+  return {
+    newRemittanceDaily,
+    presentRemittanceYearly,
+    latestApDaily,
+    presentApCompensationYearly,
+    netRemittance,
+    incrementPct,
+    apc3Cr,
+  };
+}
+
 export function computeTable3(
   avgDailyFastagCollection: number,
   fastagPenetration: number,
@@ -377,13 +447,15 @@ export interface ApcResult {
   table1: Table1;
   table2: Table2;
   table3: Table3;
+  table4: Table4 | null;
 }
 
 export function computeApc(
   rows: MonthlyRow[],
   uptoMonth: string,
   mfEntries: MfEntry[],
-  trafficGrowthPct: number = DEFAULT_TRAFFIC_GROWTH_PCT
+  trafficGrowthPct: number = DEFAULT_TRAFFIC_GROWTH_PCT,
+  incrementPct: number = DEFAULT_INCREMENT_PCT
 ): ApcResult {
   const months = windowMonths(uptoMonth);
   const table1 = computeTable1(rows, months);
@@ -393,7 +465,8 @@ export function computeApc(
     table1.weightedPenetration,
     trafficGrowthPct
   );
-  return { months, table1, table2, table3 };
+  const table4 = computeTable4(mfEntries, table2, incrementPct);
+  return { months, table1, table2, table3, table4 };
 }
 
 // ---- formatting helpers ----
@@ -425,8 +498,42 @@ export function fmtMoney(n: number): string {
   return `${fmtIN(n, 0)} (${fmtShort(n)})`;
 }
 
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 export function monthLabel(monthKey: string): string {
   const [y, m] = monthKey.split("-").map(Number);
-  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${names[m - 1]}-${y}`;
+  return `${MONTH_NAMES[m - 1]}-${y}`;
+}
+
+/** "Aug-25" style label used in the NHAI sheet. */
+export function monthShort(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  return `${MONTH_NAMES[m - 1]}-${String(y).slice(2)}`;
+}
+
+/** "August-2025" style label used in the Table-1 period. */
+export function monthFull(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  return `${MONTH_FULL[m - 1]}-${y}`;
+}
+
+/** Indian financial year label ("2026-27") of the month after `monthKey`. */
+export function feeRateYearLabel(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  const next = new Date(y, m, 1); // month after the window end
+  const fyStart = next.getMonth() >= 3 ? next.getFullYear() : next.getFullYear() - 1;
+  return `${fyStart}-${String(fyStart + 1).slice(2)}`;
+}
+
+/** "DD-MM-YYYY" as printed in the sheet's "Calculated on" cell. */
+export function fmtDateDMY(d: Date): string {
+  return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
+}
+
+/** "01.10.25" style label for an MF effective date "YYYY-MM-DD". */
+export function mfDateLabel(date: string): string {
+  if (!date) return "";
+  const [y, m, d] = date.split("-");
+  return `${d}.${m}.${y.slice(2)}`;
 }

@@ -103,7 +103,7 @@ const roundoffTotal = await page.evaluate(() => {
 });
 check(`Table 1 round-off total is 100% (got ${roundoffTotal})`, roundoffTotal === "100%");
 
-// 6. Add MF entry 2025-10-20 factor 1.05 -> Oct-25 multiplier 1.0306
+// 6. Add MF entry 2025-10-20, old 100 / new 105 (factor 1.05) -> Oct-25 multiplier 1.0306
 await page.evaluate(() => {
   const btns = [...document.querySelectorAll(".btn")];
   btns.find((b) => b.textContent.includes("Add MF")).click();
@@ -118,13 +118,16 @@ await page.$eval(".mf-row input[type=date]", (el) => {
   setter.call(el, "2025-10-20");
   el.dispatchEvent(new Event("input", { bubbles: true }));
 });
-await page.$eval(".mf-row input[type=number]", (el) => {
+await page.$$eval(".mf-row input[type=number]", (els) => {
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value"
   ).set;
-  setter.call(el, "1.05");
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  const vals = ["100", "105"];
+  els.slice(0, 2).forEach((el, i) => {
+    setter.call(el, vals[i]);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 });
 await new Promise((r) => setTimeout(r, 400));
 const octMult = await page.evaluate(() => {

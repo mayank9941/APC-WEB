@@ -14,13 +14,34 @@ export async function GET(
     return NextResponse.json({ error: "Invalid plaza code" }, { status: 400 });
   }
 
+  // Pull the whole master row so optional columns (lanes, type, PIU, RO,
+  // state) are used when present without depending on exact column names.
   const plazaRows = await sql`
-    SELECT plaza_code AS code, plaza_name AS name
-    FROM pb_plazas WHERE plaza_code = ${plazaCode}
+    SELECT plaza_code AS code, plaza_name AS name, to_jsonb(p) AS info
+    FROM pb_plazas p WHERE plaza_code = ${plazaCode}
   `;
   if (plazaRows.length === 0) {
     return NextResponse.json({ error: "Plaza not found" }, { status: 404 });
   }
+  const info = (plazaRows[0].info ?? {}) as Record<string, unknown>;
+  const pick = (patterns: RegExp[]) => {
+    for (const re of patterns) {
+      const key = Object.keys(info).find((k) => re.test(k));
+      if (key && info[key] !== null && info[key] !== undefined && info[key] !== "") {
+        return info[key] as string | number;
+      }
+    }
+    return null;
+  };
+  const plaza = {
+    code: plazaRows[0].code as number,
+    name: plazaRows[0].name as string,
+    lanes: pick([/^(no_of_|num_|total_)?lanes?$/i, /lane/i]),
+    type: pick([/^(plaza_|fee_)?type$/i, /type/i]),
+    piu: pick([/^piu(_name)?$/i, /piu/i]),
+    ro: pick([/^ro(_name)?$/i, /regional/i, /^ro/i]),
+    state: pick([/^state(_name)?$/i, /state/i]),
+  };
 
   // AP compensation comes from NHAI's real report (annual_pass_monthly),
   // attributed to the Car category; plaza-months absent from the report are 0.
@@ -44,5 +65,5 @@ export async function GET(
   `;
 
   const months = [...new Set(rows.map((r) => r.month as string))].sort();
-  return NextResponse.json({ plaza: plazaRows[0], months, rows });
+  return NextResponse.json({ plaza, months, rows });
 }

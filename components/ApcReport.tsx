@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  DEFAULT_INCREMENT_PCT,
   DEFAULT_TRAFFIC_GROWTH_PCT,
   MfEntry,
   MonthlyRow,
+  PlazaInfo,
   computeApc,
   fmtIN,
   fmtMoney,
   lastCompletedMonth,
+  mfFactor,
   monthLabel,
 } from "@/lib/apc";
 import CollectionChart from "./CollectionChart";
@@ -18,7 +21,7 @@ import { exportApcPdf } from "@/lib/exportPdf";
 import { exportApcDocx } from "@/lib/exportDocx";
 
 interface ApiResponse {
-  plaza: { code: number; name: string };
+  plaza: PlazaInfo;
   months: string[];
   rows: MonthlyRow[];
 }
@@ -29,6 +32,7 @@ export default function ApcReport({ code }: { code: string }) {
   const [uptoMonth, setUptoMonth] = useState<string>("");
   const [mfEntries, setMfEntries] = useState<MfEntry[]>([]);
   const [growth, setGrowth] = useState<number>(DEFAULT_TRAFFIC_GROWTH_PCT);
+  const [increment, setIncrement] = useState<number>(DEFAULT_INCREMENT_PCT);
 
   useEffect(() => {
     fetch(`/api/plazas/${code}`)
@@ -55,8 +59,8 @@ export default function ApcReport({ code }: { code: string }) {
 
   const result = useMemo(() => {
     if (!data || !uptoMonth) return null;
-    return computeApc(data.rows, uptoMonth, mfEntries, growth);
-  }, [data, uptoMonth, mfEntries, growth]);
+    return computeApc(data.rows, uptoMonth, mfEntries, growth, increment);
+  }, [data, uptoMonth, mfEntries, growth, increment]);
 
   if (error) {
     return (
@@ -82,7 +86,14 @@ export default function ApcReport({ code }: { code: string }) {
     );
   }
 
-  const { table1, table2, table3, months } = result;
+  const { table1, table2, table3, table4, months } = result;
+  const plazaDetails = [
+    ["Lanes", data.plaza.lanes],
+    ["Type", data.plaza.type],
+    ["PIU", data.plaza.piu],
+    ["RO", data.plaza.ro],
+    ["State", data.plaza.state],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== "") as [string, string | number][];
   const showGrowthAlert = table2.negativeTrend && growth > 0;
 
   const setMf = (i: number, patch: Partial<MfEntry>) => {
@@ -99,6 +110,15 @@ export default function ApcReport({ code }: { code: string }) {
         <h1>{data.plaza.name}</h1>
         <span className="plaza-code">Plaza code: {data.plaza.code}</span>
       </div>
+      {plazaDetails.length > 0 && (
+        <p className="plaza-details">
+          {plazaDetails.map(([k, v]) => (
+            <span key={k}>
+              <b>{k}:</b> {v}
+            </span>
+          ))}
+        </p>
+      )}
       <p className="report-subtitle">
         APC for {monthLabel(uptoMonth)} — window {monthLabel(months[0])} to{" "}
         {monthLabel(months[11])} ({table2.monthsUsed} month
@@ -178,7 +198,29 @@ export default function ApcReport({ code }: { code: string }) {
         </div>
 
         <div className="control-group">
-          <span className="group-label">MF (fee-rate revision factors)</span>
+          <label htmlFor="increment">Increment for APC-3 (%)</label>
+          <input
+            id="increment"
+            type="number"
+            step="0.5"
+            min="0"
+            value={increment}
+            onChange={(e) => setIncrement(Number(e.target.value))}
+          />
+          <span className="hint">Default {DEFAULT_INCREMENT_PCT}% on net remittance</span>
+        </div>
+
+        <div className="control-group mf-group">
+          <span className="group-label">MF (fee-rate revisions)</span>
+          {mfEntries.length > 0 && (
+            <div className="mf-row mf-head">
+              <span>Effective date</span>
+              <span>Old remittance</span>
+              <span>New remittance</span>
+              <span>MF</span>
+              <span></span>
+            </div>
+          )}
           {mfEntries.map((e, i) => (
             <div className="mf-row" key={i}>
               <input
@@ -189,12 +231,29 @@ export default function ApcReport({ code }: { code: string }) {
               />
               <input
                 type="number"
-                step="0.0001"
+                step="1"
                 min="0"
-                value={e.factor}
-                onChange={(ev) => setMf(i, { factor: Number(ev.target.value) })}
-                aria-label={`MF ${i + 1} factor`}
+                placeholder="Old ₹/day"
+                value={e.oldRemittance ?? ""}
+                onChange={(ev) =>
+                  setMf(i, { oldRemittance: ev.target.value === "" ? undefined : Number(ev.target.value) })
+                }
+                aria-label={`MF ${i + 1} old remittance`}
               />
+              <input
+                type="number"
+                step="1"
+                min="0"
+                placeholder="New ₹/day"
+                value={e.newRemittance ?? ""}
+                onChange={(ev) =>
+                  setMf(i, { newRemittance: ev.target.value === "" ? undefined : Number(ev.target.value) })
+                }
+                aria-label={`MF ${i + 1} new remittance`}
+              />
+              <span className="mf-factor" aria-label={`MF ${i + 1} factor`}>
+                {mfFactor(e) > 0 ? mfFactor(e).toFixed(4) : "—"}
+              </span>
               <button
                 className="btn remove"
                 onClick={() =>
@@ -214,8 +273,9 @@ export default function ApcReport({ code }: { code: string }) {
             + Add MF
           </button>
           <span className="hint">
-            Factor = new rate ÷ old rate, applied from its effective date
-            (day-weighted in the revision month)
+            MF = new remittance ÷ old remittance, applied from its effective
+            date (day-weighted in the revision month). The latest new
+            remittance also drives Table 4.
           </span>
         </div>
       </div>
@@ -254,14 +314,16 @@ export default function ApcReport({ code }: { code: string }) {
                   <span className="formula">A</span>
                 </th>
                 <th className="num">
-                  Cash + UPI Transactions
+                  Total Cash + UPI @TMCC
+                  <span className="formula">B1</span>
                 </th>
                 <th className="num">
-                  50% of Exempted
+                  Exempted Transactions @TMCC
+                  <span className="formula">B2</span>
                 </th>
                 <th className="num">
-                  Total Transactions as per TMCC (ETC+Cash+UPI+50% of exempted)
-                  <span className="formula">B</span>
+                  Total Transactions for APC
+                  <span className="formula">B = A + B1 + 50% of B2</span>
                 </th>
                 <th className="num">
                   % ETC Penetration
@@ -292,7 +354,7 @@ export default function ApcReport({ code }: { code: string }) {
                   <td>{r.npciCodes}</td>
                   <td className="num">{fmtIN(r.etcTxn)}</td>
                   <td className="num">{fmtIN(r.cashUpiTxn)}</td>
-                  <td className="num">{fmtIN(r.exemptHalf, 1)}</td>
+                  <td className="num">{fmtIN(r.exemptTxn)}</td>
                   <td className="num">{fmtIN(r.totalTxn, 1)}</td>
                   <td className="num">{r.penetration.toFixed(2)}</td>
                   <td className="num">{fmtIN(r.etcCollectionWithAp)}</td>
@@ -449,6 +511,50 @@ export default function ApcReport({ code }: { code: string }) {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* ---------------- Table 4 ---------------- */}
+      <section className="card">
+        <h2>Table 4 — Calculation of APC-3</h2>
+        {table4 ? (
+          <div className="table-wrap">
+            <table className="apc">
+              <tbody>
+                <tr>
+                  <td>Present Remittance (Yearly)</td>
+                  <td className="num">
+                    {fmtMoney(table4.presentRemittanceYearly)}
+                    <span className="sub">₹ {fmtIN(table4.newRemittanceDaily)} per day × 365</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Present Annual Pass Compensation (Yearly)</td>
+                  <td className="num">
+                    {fmtMoney(table4.presentApCompensationYearly)}
+                    <span className="sub">₹ {fmtIN(table4.latestApDaily)} per day × 365</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Net Remittance</td>
+                  <td className="num">{fmtMoney(table4.netRemittance)}</td>
+                </tr>
+                <tr>
+                  <td>Increment</td>
+                  <td className="num">{table4.incrementPct.toFixed(2)}%</td>
+                </tr>
+                <tr className="total">
+                  <td>APC-3</td>
+                  <td className="num">{table4.apc3Cr.toFixed(2)} Cr.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="card-note">
+            Enter the old and new remittance for at least one MF revision to
+            compute APC-3 from the present remittance.
+          </p>
+        )}
       </section>
     </div>
   );
