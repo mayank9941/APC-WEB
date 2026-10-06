@@ -15,7 +15,9 @@
 // ANNUAL_PASS_COMPENSATION) -> annual_pass_monthly.
 //
 // --apply DELETEs all rows from both tables and inserts the new data inside
-// one transaction. pb_plazas is left untouched unless --add-missing-plazas.
+// one transaction. pb_plazas is left untouched unless --add-missing-plazas
+// (required when the workbook has plazas missing from pb_plazas, because
+// plaza_monthly_data.plaza_code references pb_plazas).
 // DATABASE_URL is read from the environment or .env.local.
 
 import { readFileSync, existsSync } from "node:fs";
@@ -57,6 +59,7 @@ interface ApRow {
   plaza_code: number;
   month: string;
   compensation: number;
+  qualified_txn: number;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -181,6 +184,7 @@ function parseAnnualPass(ws: ExcelJS.Worksheet) {
     month: need(idx, "Month", AP_SHEET),
     netc: need(idx, "NETC", AP_SHEET),
     comp: need(idx, "ANNUAL_PASS_COMPENSATION", AP_SHEET),
+    qual: idx.get("ANNUAL_PASS_QUALIFIED_TXN"),
   };
   const out = new Map<string, ApRow>();
   let skipped = 0;
@@ -195,12 +199,14 @@ function parseAnnualPass(ws: ExcelJS.Worksheet) {
     }
     const key = `${code}|${month}`;
     const comp = num(row.getCell(c.comp).value);
+    const qual = c.qual ? num(row.getCell(c.qual).value) : 0;
     const existing = out.get(key);
     if (existing) {
       dupes++;
       existing.compensation += comp; // same plaza-month twice: sum
+      existing.qualified_txn += qual;
     } else {
-      out.set(key, { plaza_code: code, month, compensation: comp });
+      out.set(key, { plaza_code: code, month, compensation: comp, qualified_txn: qual });
     }
   });
   return { rows: [...out.values()], skipped, dupes };
@@ -315,23 +321,24 @@ async function main() {
         INSERT INTO plaza_monthly_data
           (plaza_code, month, category, etc_cnt, cash_cnt, upi_cnt, exempt_cnt, tmcc_total, etc_collection, ap_cnt, ap_compensation)
         SELECT *, 0 FROM unnest(
-          ${codes}::int[], ${months}::date[], ${cats}::text[], ${etc}::numeric[], ${cash}::numeric[],
-          ${upi}::numeric[], ${ex}::numeric[], ${tmcc}::numeric[], ${col}::numeric[], ${apc}::numeric[])`);
+          ${codes}::int[], ${months}::date[], ${cats}::text[], ${etc}::bigint[], ${cash}::bigint[],
+          ${upi}::bigint[], ${ex}::bigint[], ${tmcc}::numeric[], ${col}::numeric[], ${apc}::bigint[])`);
     } else {
       queries.push(sql`
         INSERT INTO plaza_monthly_data
           (plaza_code, month, category, etc_cnt, cash_cnt, upi_cnt, exempt_cnt, tmcc_total, etc_collection, ap_cnt)
         SELECT * FROM unnest(
-          ${codes}::int[], ${months}::date[], ${cats}::text[], ${etc}::numeric[], ${cash}::numeric[],
-          ${upi}::numeric[], ${ex}::numeric[], ${tmcc}::numeric[], ${col}::numeric[], ${apc}::numeric[])`);
+          ${codes}::int[], ${months}::date[], ${cats}::text[], ${etc}::bigint[], ${cash}::bigint[],
+          ${upi}::bigint[], ${ex}::bigint[], ${tmcc}::numeric[], ${col}::numeric[], ${apc}::bigint[])`);
     }
   }
 
   for (let i = 0; i < ap.rows.length; i += BATCH) {
     const b = ap.rows.slice(i, i + BATCH);
     queries.push(sql`
-      INSERT INTO annual_pass_monthly (plaza_code, month, compensation)
-      SELECT * FROM unnest(${b.map((r) => r.plaza_code)}::int[], ${b.map((r) => r.month)}::date[], ${b.map((r) => r.compensation)}::numeric[])`);
+      INSERT INTO annual_pass_monthly (plaza_code, month, compensation, qualified_txn)
+      SELECT * FROM unnest(${b.map((r) => r.plaza_code)}::int[], ${b.map((r) => r.month)}::date[],
+                           ${b.map((r) => r.compensation)}::numeric[], ${b.map((r) => Math.round(r.qualified_txn))}::bigint[])`);
   }
 
   console.log(`running ${queries.length} statements in one transaction ...`);
