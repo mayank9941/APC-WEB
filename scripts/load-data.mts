@@ -1,29 +1,38 @@
-// Loads NHAI's "NH Plazas ETC and Non-ETC data.xlsx" into Neon Postgres.
+// Loads NHAI's monthly ETC / Non-ETC / Annual Pass workbook into Neon Postgres.
 //
 //   npx tsx scripts/load-data.mts <workbook.xlsx>            # dry run: parse + report only
 //   npx tsx scripts/load-data.mts <workbook.xlsx> --apply    # replace DB contents
-//   npx tsx scripts/load-data.mts <workbook.xlsx> --apply --add-missing-plazas
+//   npx tsx scripts/load-data.mts <workbook.xlsx> --apply --add-missing-plazas [--point-based-only]
 //
-// Sheet "ETC & Non-ETC" (Month, NETC, PLAZA, VEHICLE_CLASS, ETC_COUNT,
-// ETC_COLLECTION, ANNUAL_PASS_COUNT, CASH_COUNT, CASH_COLLECTION, UPI_COUNT,
-// UPI_COLLECTION, EXEMPT_COUNT, VIOLATION_COUNT) -> plaza_monthly_data, one
-// row per plaza x month x NHAI category. Raw vehicle classes are mapped to
-// the 6 categories (4-6 Axle and HCM/EME merge); unmapped classes are dropped.
-// tmcc_total = etc + cash + upi + 50% of exempted.
+// Two workbook layouts are understood (columns matched by name, case-insensitive):
+//  * "ETC & Non-ETC" / "Annual Pass"  (Month, NETC, PLAZA, VEHICLE_CLASS, ETC_COUNT,
+//    ETC_COLLECTION, ANNUAL_PASS_COUNT, CASH_COUNT, UPI_COUNT, EXEMPT_COUNT ...
+//    / ANNUAL_PASS_QUALIFIED_TXN, ANNUAL_PASS_COMPENSATION)
+//  * "ETC & Non-ETC Data" / "Annual Pass Data"  (Month as "May-2025", Plaza, NETC,
+//    Ownership, Toll Type, Closed-Loop/Point-Based, Vehicle Class, ETC_Traffic,
+//    ETC_Collection, Annual_Pass_Traffic, CASH_Traffic, UPI_Traffic,
+//    EXEMPTION_Traffic ... / Total_Qualified_Transactions, Annual_Pass_Compensation)
 //
-// Sheet "Annual Pass" (Month, NETC, PLAZA, ANNUAL_PASS_QUALIFIED_TXN,
-// ANNUAL_PASS_COMPENSATION) -> annual_pass_monthly.
+// ETC sheet -> plaza_monthly_data, one row per plaza x month x NHAI category.
+// Raw vehicle classes are mapped to the 6 categories (4-6 Axle and HCM/EME
+// merge); unmapped classes (Tractors, 2/3 Wheeler, Blank/Others, WAVC, ...)
+// are dropped. tmcc_total = etc + cash + upi + 50% of exempted.
+// Annual Pass sheet -> annual_pass_monthly.
+// --point-based-only keeps rows whose Closed-Loop/Point-Based column says
+// Point-Based (when that column exists).
 //
 // --apply DELETEs all rows from both tables and inserts the new data inside
 // one transaction. pb_plazas is left untouched unless --add-missing-plazas
 // (required when the workbook has plazas missing from pb_plazas, because
 // plaza_monthly_data.plaza_code references pb_plazas).
 // DATABASE_URL is read from the environment or .env.local.
+// If the local network's DNS cannot resolve *.neon.tech, set
+// DNS_SERVERS=8.8.8.8,1.1.1.1 to resolve the database host via those servers.
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import ExcelJS from "exceljs";
-import { neon } from "@neondatabase/serverless";
+import { neon, neonConfig } from "@neondatabase/serverless";
 import { CATEGORIES } from "../lib/apc.ts";
 
 type Category = (typeof CATEGORIES)[number];
@@ -39,9 +48,26 @@ const CLASS_MAP: Record<string, Category> = {
   "7 or more Axle": CATEGORIES[5],
 };
 
-const ETC_SHEET = "ETC & Non-ETC";
-const AP_SHEET = "Annual Pass";
 const BATCH = 4000;
+
+/** Column aliases (upper-cased) across the known workbook layouts. */
+const COLS = {
+  month: ["MONTH"],
+  netc: ["NETC", "NETC_CODE", "PLAZA_CODE"],
+  plaza: ["PLAZA", "PLAZA_NAME", "NAME"],
+  vc: ["VEHICLE_CLASS", "VEHICLE CLASS", "VC"],
+  etc: ["ETC_COUNT", "ETC_TRAFFIC", "ETC_CNT"],
+  etcCol: ["ETC_COLLECTION"],
+  ap: ["ANNUAL_PASS_COUNT", "ANNUAL_PASS_TRAFFIC", "AP_CNT"],
+  cash: ["CASH_COUNT", "CASH_TRAFFIC", "CASH_CNT"],
+  upi: ["UPI_COUNT", "UPI_TRAFFIC", "UPI_CNT"],
+  exempt: ["EXEMPT_COUNT", "EXEMPTION_TRAFFIC", "EXEMPT_CNT"],
+  loop: ["CLOSED-LOOP/POINT-BASED", "CLOSED_LOOP/POINT_BASED", "PLAZA_TYPE"],
+  comp: ["ANNUAL_PASS_COMPENSATION"],
+  qual: ["ANNUAL_PASS_QUALIFIED_TXN", "TOTAL_QUALIFIED_TRANSACTIONS", "TOTAL_QUALIFIED_TRANSACTION"],
+};
+
+const MONTHS3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
 interface MonthlyAgg {
   plaza_code: number;
@@ -74,13 +100,73 @@ function loadEnv() {
   }
 }
 
+/**
+ * Optional: route the Neon HTTP driver's fetch through undici with hostnames
+ * resolved by DNS-over-HTTPS (dns.google) and, as fallback, the UDP servers
+ * in DNS_SERVERS. For networks whose resolver refuses neon.tech lookups.
+ * No effect when DNS_SERVERS is unset.
+ */
+async function configureDns() {
+  const servers = process.env.DNS_SERVERS?.split(",").map((x) => x.trim()).filter(Boolean);
+  if (!servers?.length) return;
+  const dns = await import("node:dns");
+  const resolver = new dns.Resolver();
+  resolver.setServers(servers);
+  const { Agent, fetch: ufetch } = await import("undici");
+  const cache = new Map<string, string[]>();
+
+  const viaDoh = async (host: string): Promise<string[]> => {
+    const r = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(host)}&type=A`);
+    if (!r.ok) throw new Error(`DoH HTTP ${r.status}`);
+    const j = (await r.json()) as { Answer?: { type: number; data: string }[] };
+    const a = (j.Answer ?? []).filter((x) => x.type === 1).map((x) => x.data);
+    if (!a.length) throw new Error(`DoH: no A record for ${host}`);
+    return a;
+  };
+  const viaUdp = (host: string) =>
+    new Promise<string[]>((res, rej) => resolver.resolve4(host, (e, a) => (e || !a.length ? rej(e ?? new Error("no A")) : res(a))));
+  const resolve = async (host: string): Promise<string[]> => {
+    const hit = cache.get(host);
+    if (hit) return hit;
+    let addrs: string[];
+    try {
+      addrs = await viaDoh(host);
+    } catch {
+      addrs = await viaUdp(host);
+    }
+    cache.set(host, addrs);
+    return addrs;
+  };
+
+  type LookupCb = (err: NodeJS.ErrnoException | null, address?: unknown, family?: number) => void;
+  const lookup = (host: string, opts: { all?: boolean } | undefined, cb: LookupCb) => {
+    resolve(host).then(
+      (addrs) => (opts?.all ? cb(null, addrs.map((address) => ({ address, family: 4 }))) : cb(null, addrs[0], 4)),
+      (err: NodeJS.ErrnoException) => cb(err)
+    );
+  };
+  const agent = new Agent({ connect: { lookup } as unknown as ConstructorParameters<typeof Agent>[0] extends { connect?: infer C } ? C : never });
+  neonConfig.fetchFunction = (url: string, init: Record<string, unknown>) =>
+    ufetch(url, { ...init, dispatcher: agent } as Parameters<typeof ufetch>[1]);
+  console.log(`DNS: resolving via DNS-over-HTTPS, fallback ${servers.join(", ")}`);
+}
+
 function monthKey(v: unknown): string | null {
   if (v instanceof Date) {
     return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-01`;
   }
   if (typeof v === "string") {
-    const m = v.match(/^(\d{4})-(\d{2})/);
-    if (m) return `${m[1]}-${m[2]}-01`;
+    const s = v.trim();
+    const iso = s.match(/^(\d{4})-(\d{2})/);
+    if (iso) return `${iso[1]}-${iso[2]}-01`;
+    const mon = s.match(/^([A-Za-z]{3})[a-z]*[-\s'/]*(\d{2}|\d{4})$/); // "May-2025", "May 25", "May-25"
+    if (mon) {
+      const mi = MONTHS3.indexOf(mon[1].toUpperCase());
+      if (mi >= 0) {
+        const y = mon[2].length === 2 ? 2000 + Number(mon[2]) : Number(mon[2]);
+        return `${y}-${String(mi + 1).padStart(2, "0")}-01`;
+      }
+    }
   }
   if (typeof v === "number") {
     // Excel serial date
@@ -103,7 +189,7 @@ function text(v: unknown): string {
   if (typeof v === "object" && v && "richText" in v) {
     return (v as { richText: { text: string }[] }).richText.map((t) => t.text).join("");
   }
-  return String(v).trim();
+  return String(v).replace(/[\u200b-\u200d\ufeff]/g, "").trim();
 }
 
 function headerIndex(ws: ExcelJS.Worksheet): Map<string, number> {
@@ -112,35 +198,58 @@ function headerIndex(ws: ExcelJS.Worksheet): Map<string, number> {
   return idx;
 }
 
-function need(idx: Map<string, number>, name: string, sheet: string): number {
-  const c = idx.get(name.toUpperCase());
-  if (!c) throw new Error(`Sheet "${sheet}": column "${name}" not found. Found: ${[...idx.keys()].join(", ")}`);
+function find(idx: Map<string, number>, aliases: string[]): number | undefined {
+  for (const a of aliases) {
+    const c = idx.get(a);
+    if (c) return c;
+  }
+  return undefined;
+}
+
+function need(idx: Map<string, number>, aliases: string[], sheet: string): number {
+  const c = find(idx, aliases);
+  if (!c) throw new Error(`Sheet "${sheet}": none of [${aliases.join(", ")}] found. Columns: ${[...idx.keys()].join(", ")}`);
   return c;
+}
+
+/** Find a sheet by title, falling back to one whose header row has the given column. */
+function findSheet(wb: ExcelJS.Workbook, re: RegExp, headerAliases: string[], what: string): ExcelJS.Worksheet {
+  const byTitle = wb.worksheets.find((w) => re.test(w.title));
+  if (byTitle) return byTitle;
+  const byHeader = wb.worksheets.find((w) => find(headerIndex(w), headerAliases) !== undefined);
+  if (byHeader) return byHeader;
+  throw new Error(`${what} sheet not found. Sheets: ${wb.worksheets.map((w) => w.title || "(untitled)").join(", ")}`);
 }
 
 // ---------------------------------------------------------------- parse
 
-function parseMonthly(ws: ExcelJS.Worksheet) {
+function parseMonthly(ws: ExcelJS.Worksheet, pointBasedOnly: boolean) {
   const idx = headerIndex(ws);
+  const S = ws.title;
   const c = {
-    month: need(idx, "Month", ETC_SHEET),
-    netc: need(idx, "NETC", ETC_SHEET),
-    plaza: need(idx, "PLAZA", ETC_SHEET),
-    vc: need(idx, "VEHICLE_CLASS", ETC_SHEET),
-    etc: need(idx, "ETC_COUNT", ETC_SHEET),
-    etcCol: need(idx, "ETC_COLLECTION", ETC_SHEET),
-    ap: need(idx, "ANNUAL_PASS_COUNT", ETC_SHEET),
-    cash: need(idx, "CASH_COUNT", ETC_SHEET),
-    upi: need(idx, "UPI_COUNT", ETC_SHEET),
-    exempt: need(idx, "EXEMPT_COUNT", ETC_SHEET),
+    month: need(idx, COLS.month, S),
+    netc: need(idx, COLS.netc, S),
+    plaza: need(idx, COLS.plaza, S),
+    vc: need(idx, COLS.vc, S),
+    etc: need(idx, COLS.etc, S),
+    etcCol: need(idx, COLS.etcCol, S),
+    ap: need(idx, COLS.ap, S),
+    cash: need(idx, COLS.cash, S),
+    upi: need(idx, COLS.upi, S),
+    exempt: need(idx, COLS.exempt, S),
+    loop: find(idx, COLS.loop),
   };
+  if (pointBasedOnly && !c.loop) throw new Error(`--point-based-only given but sheet "${S}" has no Closed-Loop/Point-Based column`);
 
   const agg = new Map<string, MonthlyAgg>();
   const plazaNames = new Map<number, string>();
+  const plazaLoop = new Map<number, string>();
   const dropped = new Map<string, number>();
+  const loopCounts = new Map<string, number>();
   const months = new Set<string>();
   let rows = 0;
   let skipped = 0;
+  let filtered = 0;
 
   ws.eachRow((row, n) => {
     if (n === 1) return;
@@ -150,6 +259,15 @@ function parseMonthly(ws: ExcelJS.Worksheet) {
     if (!month || !Number.isInteger(code) || code <= 0) {
       skipped++;
       return;
+    }
+    if (c.loop) {
+      const loop = text(row.getCell(c.loop).value);
+      loopCounts.set(loop || "(blank)", (loopCounts.get(loop || "(blank)") ?? 0) + 1);
+      plazaLoop.set(code, loop);
+      if (pointBasedOnly && !/point/i.test(loop)) {
+        filtered++;
+        return;
+      }
     }
     rows++;
     months.add(month);
@@ -175,26 +293,33 @@ function parseMonthly(ws: ExcelJS.Worksheet) {
     a.ap_cnt += num(row.getCell(c.ap).value);
   });
 
-  return { rows, skipped, months: [...months].sort(), agg: [...agg.values()], plazaNames, dropped };
+  return { rows, skipped, filtered, loopCounts, months: [...months].sort(), agg: [...agg.values()], plazaNames, plazaLoop, dropped };
 }
 
-function parseAnnualPass(ws: ExcelJS.Worksheet) {
+function parseAnnualPass(ws: ExcelJS.Worksheet, pointBasedOnly: boolean) {
   const idx = headerIndex(ws);
+  const S = ws.title;
   const c = {
-    month: need(idx, "Month", AP_SHEET),
-    netc: need(idx, "NETC", AP_SHEET),
-    comp: need(idx, "ANNUAL_PASS_COMPENSATION", AP_SHEET),
-    qual: idx.get("ANNUAL_PASS_QUALIFIED_TXN"),
+    month: need(idx, COLS.month, S),
+    netc: need(idx, COLS.netc, S),
+    comp: need(idx, COLS.comp, S),
+    qual: find(idx, COLS.qual),
+    loop: find(idx, COLS.loop),
   };
   const out = new Map<string, ApRow>();
   let skipped = 0;
   let dupes = 0;
+  let filtered = 0;
   ws.eachRow((row, n) => {
     if (n === 1) return;
     const month = monthKey(row.getCell(c.month).value);
     const code = Number(text(row.getCell(c.netc).value));
     if (!month || !Number.isInteger(code) || code <= 0) {
       skipped++;
+      return;
+    }
+    if (pointBasedOnly && c.loop && !/point/i.test(text(row.getCell(c.loop).value))) {
+      filtered++;
       return;
     }
     const key = `${code}|${month}`;
@@ -209,7 +334,7 @@ function parseAnnualPass(ws: ExcelJS.Worksheet) {
       out.set(key, { plaza_code: code, month, compensation: comp, qualified_txn: qual });
     }
   });
-  return { rows: [...out.values()], skipped, dupes };
+  return { rows: [...out.values()], skipped, dupes, filtered };
 }
 
 // ---------------------------------------------------------------- main
@@ -219,36 +344,44 @@ async function main() {
   const file = args.find((a) => !a.startsWith("--"));
   const apply = args.includes("--apply");
   const addMissing = args.includes("--add-missing-plazas");
+  const pointBasedOnly = args.includes("--point-based-only");
   if (!file) {
-    console.error("Usage: npx tsx scripts/load-data.mts <workbook.xlsx> [--apply] [--add-missing-plazas]");
+    console.error("Usage: npx tsx scripts/load-data.mts <workbook.xlsx> [--apply] [--add-missing-plazas] [--point-based-only]");
     process.exit(1);
   }
 
   console.log(`Reading ${file} ...`);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(file);
-  const etcWs = wb.getWorksheet(ETC_SHEET);
-  const apWs = wb.getWorksheet(AP_SHEET);
-  if (!etcWs) throw new Error(`Sheet "${ETC_SHEET}" not found. Sheets: ${wb.worksheets.map((w) => w.title).join(", ")}`);
-  if (!apWs) throw new Error(`Sheet "${AP_SHEET}" not found. Sheets: ${wb.worksheets.map((w) => w.title).join(", ")}`);
+  const etcWs = findSheet(wb, /etc.*non.?etc/i, COLS.vc, "ETC & Non-ETC");
+  const apWs = findSheet(wb, /^annual.?pass/i, COLS.comp, "Annual Pass");
+  console.log(`sheets: "${etcWs.title || "(untitled)"}", "${apWs.title || "(untitled)"}"`);
 
-  const monthly = parseMonthly(etcWs);
-  const ap = parseAnnualPass(apWs);
+  const monthly = parseMonthly(etcWs, pointBasedOnly);
+  const ap = parseAnnualPass(apWs, pointBasedOnly);
 
   const byCat = new Map<string, number>();
   for (const r of monthly.agg) byCat.set(r.category, (byCat.get(r.category) ?? 0) + 1);
 
   console.log("\n== ETC & Non-ETC ==");
-  console.log(`source rows: ${monthly.rows} (skipped ${monthly.skipped} without month/NETC)`);
+  console.log(`source rows: ${monthly.rows} (skipped ${monthly.skipped} without month/NETC` +
+    (monthly.filtered ? `, filtered out ${monthly.filtered} non point-based` : "") + ")");
+  if (monthly.loopCounts.size) {
+    const loopPlazas = new Map<string, number>();
+    for (const l of monthly.plazaLoop.values()) loopPlazas.set(l, (loopPlazas.get(l) ?? 0) + 1);
+    console.log("plaza types in file:", Object.fromEntries(loopPlazas), pointBasedOnly ? "(loading Point-Based only)" : "(loading all)");
+  }
   console.log(`months: ${monthly.months[0]} .. ${monthly.months[monthly.months.length - 1]} (${monthly.months.length})`);
   console.log(`plazas: ${monthly.plazaNames.size}`);
   console.log(`rows to load into plaza_monthly_data: ${monthly.agg.length}`);
   for (const cat of CATEGORIES) console.log(`  ${cat}: ${byCat.get(cat) ?? 0}`);
   console.log("dropped vehicle classes:", Object.fromEntries(monthly.dropped));
   console.log("\n== Annual Pass ==");
-  console.log(`rows to load into annual_pass_monthly: ${ap.rows.length} (skipped ${ap.skipped}, merged duplicates ${ap.dupes})`);
+  console.log(`rows to load into annual_pass_monthly: ${ap.rows.length} (skipped ${ap.skipped}, merged duplicates ${ap.dupes}` +
+    (ap.filtered ? `, filtered out ${ap.filtered} non point-based` : "") + ")");
 
   loadEnv();
+  await configureDns();
   if (!process.env.DATABASE_URL) {
     console.log("\nDATABASE_URL not set: parse-only dry run finished. Add it to .env.local to compare with / write to the DB.");
     return;
