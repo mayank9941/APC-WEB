@@ -86,7 +86,7 @@ export default function ApcReport({ code }: { code: string }) {
     );
   }
 
-  const { table1, table2, table3, table4, months } = result;
+  const { table1, table2, table3, months } = result;
   const plazaDetails = [
     ["Lanes", data.plaza.lanes],
     ["Type", data.plaza.type],
@@ -275,7 +275,7 @@ export default function ApcReport({ code }: { code: string }) {
           <span className="hint">
             MF = new remittance ÷ old remittance, applied from its effective
             date (day-weighted in the revision month). The latest new
-            remittance also drives Table 4.
+            remittance also drives Table-4 (APC-3) in the PDF and Word exports.
           </span>
         </div>
       </div>
@@ -513,49 +513,6 @@ export default function ApcReport({ code }: { code: string }) {
         </div>
       </section>
 
-      {/* ---------------- Table 4 ---------------- */}
-      <section className="card">
-        <h2>Table 4 — Calculation of APC-3</h2>
-        {table4 ? (
-          <div className="table-wrap">
-            <table className="apc">
-              <tbody>
-                <tr>
-                  <td>Present Remittance (Yearly)</td>
-                  <td className="num">
-                    {fmtMoney(table4.presentRemittanceYearly)}
-                    <span className="sub">₹ {fmtIN(table4.newRemittanceDaily)} per day × 365</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Present Annual Pass Compensation (Yearly)</td>
-                  <td className="num">
-                    {fmtMoney(table4.presentApCompensationYearly)}
-                    <span className="sub">₹ {fmtIN(table4.latestApDaily)} per day × 365</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Net Remittance</td>
-                  <td className="num">{fmtMoney(table4.netRemittance)}</td>
-                </tr>
-                <tr>
-                  <td>Increment</td>
-                  <td className="num">{table4.incrementPct.toFixed(2)}%</td>
-                </tr>
-                <tr className="total">
-                  <td>APC-3</td>
-                  <td className="num">{table4.apc3Cr.toFixed(2)} Cr.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="card-note">
-            Enter the old and new remittance for at least one MF revision to
-            compute APC-3 from the present remittance.
-          </p>
-        )}
-      </section>
     </div>
   );
 }
